@@ -12,10 +12,29 @@ SRC_CONTAINER_FILES=$(shell find src 2>/dev/null|| echo "src") \
                     Makefile \
                     pyproject.toml
 
+# Detect the current architecture
+CONTAINER_ARCH ?= $(shell uname -m)
+
+# Define the platform mapping
+ifeq ($(CONTAINER_ARCH), x86_64)
+    PLATFORM_TYPE := amd64
+else ifeq ($(CONTAINER_ARCH), aarch64)
+    PLATFORM_TYPE := arm64
+else ifeq ($(CONTAINER_ARCH), s390x)
+    PLATFORM_TYPE := s390x
+else ifeq ($(CONTAINER_ARCH), ppc64le)
+    PLATFORM_TYPE := ppc64le
+else
+    PLATFORM_TYPE := $(CONTAINER_ARCH)
+endif
+
+PLATFORM := linux/$(PLATFORM_TYPE)
+
 container_built.info: Containerfile $(SRC_CONTAINER_FILES) # internal rule to avoid rebuilding if not necessary
-	podman build --build-arg CONTAINERS_STORAGE_THIN_TAGS="$(CONTAINERS_STORAGE_THIN_TAGS)" \
+	podman build --platform "$(PLATFORM)" \
+	             --build-arg CONTAINERS_STORAGE_THIN_TAGS="$(CONTAINERS_STORAGE_THIN_TAGS)" \
 	             --build-arg IMAGES_REF="$(IMAGES_REF)" \
-	             --tag otk \
+	             --tag otk_$(CONTAINER_ARCH) \
 	             --pull=newer .
 	echo "Container last built on" > $@
 	date >> $@
@@ -23,11 +42,30 @@ container_built.info: Containerfile $(SRC_CONTAINER_FILES) # internal rule to av
 .PHONY: container
 container: container_built.info ## rebuild the upstream container "ghcr.io/osbuild/otk" locally
 
-CONTAINER_TEST_FILE?=example/centos/centos-9-x86_64-tar.yaml
+CONTAINER_TEST_FILE?=example/centos/centos-9-$(CONTAINER_ARCH)-tar.yaml
+
+# just a sanity-check including hints for the user
+# if the given filename does not exist.
+# By default this filename is constructed by including the
+# detected architecture, which then could lead to a broken `container-test`
+$(CONTAINER_TEST_FILE): # internal rule for sanity check including hints for the user
+ifeq (,$(findstring $(CONTAINER_ARCH),$(CONTAINER_TEST_FILE)))
+	@echo "WARNING: $(CONTAINER_TEST_FILE) does not exist"
+else
+	@echo "WARNING: $(CONTAINER_TEST_FILE) does not exist so it seems"
+	@echo "         $(CONTAINER_ARCH) is not supported by the project (yet)"
+	@echo "         please use a supported architecture in CONTAINER_ARCH, implement the missing example"
+	@echo "         or override CONTAINER_TEST_FILE with an existing file"
+endif
+	exit 1
 
 .PHONY: container-test
-container-test: container ## run an example command in the container to test it
-	podman run --rm -ti -v .:/app otk:latest compile /app/$(CONTAINER_TEST_FILE)
+container-test: $(CONTAINER_TEST_FILE) container ## run an example command in the container to test it
+ifeq (,$(findstring $(PLATFORM),$(CONTAINER_TEST_FILE)))
+	echo "WARNING: The CONTAINER_TEST_FILE ($(CONTAINER_TEST_FILE)) does not contain the PLATFORM_TYPE $(PLATFORM_TYPE)"
+	echo "This is just a naming convention to warn for possible incompatibilities"
+endif
+	podman run --platform="$(PLATFORM)" --rm -ti -v .:/app localhost/otk_$(CONTAINER_ARCH):latest compile /app/$(CONTAINER_TEST_FILE)
 
 .PHONY: lint
 lint: check-pre-commit
